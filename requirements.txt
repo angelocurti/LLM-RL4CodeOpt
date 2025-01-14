@@ -1,0 +1,7 @@
+datasets
+transformers
+torch
+tree-sitter
+accelerate
+peft
+trl

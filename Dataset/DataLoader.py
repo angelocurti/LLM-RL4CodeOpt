@@ -59,7 +59,7 @@ class DataLoader:
 
         # Use the tokenizer to get input_ids for both codes
         non_optimized_inputs = self.tokenizer(self.prompt.format(input=non_optimized_code), return_tensors='pt', padding='max_length', max_length=self.max_length, truncation=True)
-        optimized_inputs = self.tokenizer(optimized_code, return_tensors='pt', padding=True,  padding='max_length', max_length=self.max_length)
+        optimized_inputs = self.tokenizer(optimized_code, return_tensors='pt', padding='max_length', max_length=self.max_length)
 
         # Return a dictionary with `input_ids` for both codes
         return {

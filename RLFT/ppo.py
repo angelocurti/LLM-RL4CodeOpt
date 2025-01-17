@@ -64,12 +64,13 @@ class PPOTrainer:
         'adam_eps': 1e-8
     }
 
-    def __init__(self, model, ref_model, **ppo_params):
+    def __init__(self, model, ref_model, value_model, **ppo_params):
         self.ppo_params = self.default_params
         self.ppo_params.update(ppo_params)
 
         self.ref_model = ref_model
         self.model = model
+        self.value_model = value_model
         self.optimizer = AdamW(model.parameters(), lr=self.ppo_params['lr'], eps=self.ppo_params['adam_eps'])
         self.scheduler = optim.lr_scheduler.ReduceLROnPlateau(optimizer = self.optimizer, factor =1. / np.cbrt(2), patience= 100, verbose = True)
         self.metric = 0
@@ -129,8 +130,9 @@ class PPOTrainer:
 
     def batched_forward_pass(self, source_ids, source_mask, response_ids):
         with torch.no_grad():
-            logits, _, values = self.model(input_ids=source_ids, attention_mask=source_mask, labels=response_ids)
+            logits, _, _ = self.model(input_ids=source_ids, attention_mask=source_mask, labels=response_ids)
             ref_logits, _, _ = self.ref_model(input_ids=source_ids, attention_mask=source_mask, labels=response_ids)
+            values = self.value_model(input_ids=source_ids, attention_mask=source_mask, labels=response_ids)
         values = values.detach()
         logprobs = logprobs_from_logits(logits, response_ids).detach()
         ref_logprobs = logprobs_from_logits(ref_logits, response_ids).detach()

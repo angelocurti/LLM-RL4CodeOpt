@@ -1,6 +1,6 @@
 datasets
 transformers
-torch
+torch = 1.10
 tree-sitter
 accelerate
 peft

@@ -4,7 +4,7 @@ __all__ = ['extract_structure','flatten_dict', 'stack_dicts', 'add_suffix', 'pad
 # Cell
 import torch
 import torch.nn.functional as F
-import collections
+from collections.abc import Mapping
 import numpy as np
 from tqdm import tqdm
 import pickle
@@ -17,7 +17,7 @@ def flatten_dict(nested, sep='/'):
         for k, v in nest.items():
             if sep in k:
                 raise ValueError(f"separator '{sep}' not allowed to be in key '{k}'")
-            if isinstance(v, collections.Mapping):
+            if isinstance(v, Mapping):
                 rec(v, prefix + k + sep, into)
             else:
                 into[prefix + k] = v
@@ -134,7 +134,7 @@ def build_bert_batch_from_txt(text_list, tokenizer, device):
 
 def respond_to_batch(model, source_ids, attention_mask, max_target_length=400, top_k=5, top_p=1.0):
     
-    preds = model.model.generate(source_ids, attention_mask=attention_mask, do_sample=True, top_k=top_k, top_p=top_p,
+    preds = model.generate(source_ids, attention_mask=attention_mask, do_sample=True, top_k=top_k, top_p=top_p,
                                  max_length=max_target_length)
     # preds = model.module.model.generate(source_ids, attention_mask=attention_mask, do_sample=True, top_k=top_k, top_p=top_p,
     #                              max_length=max_target_length)

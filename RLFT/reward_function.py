@@ -132,7 +132,7 @@ def measure_script_performance(script_code, input_path, expected_output_path, ti
 
 
 
-def get_reward(test_cases, code_ids=None,base_ids=None, tokenizer=None):
+def get_reward(test_cases = None, code_ids=None, base_ids=None, tokenizer=None):
     code_ids = np.array(code_ids.cpu())
     eos_positions = []
     max_len = code_ids.shape[1]
@@ -146,23 +146,27 @@ def get_reward(test_cases, code_ids=None,base_ids=None, tokenizer=None):
              for id,eos_pos in zip(code_ids, eos_positions)]
     codes_base = [tokenizer.decode(id[:eos_pos], skip_special_tokens=True, clean_up_tokenization_spaces=False) \
              for id,eos_pos in zip(base_ids, eos_positions)] 
-        
-    metrics = [
-        measure_script_performance(code, test_case.input_path, test_case.expected_output_path) 
-        for code, test_case in zip(codes, test_cases)
-    ]
-    base_metrics = [
-        measure_script_performance(code, test_case.input_path, test_case.expected_output_path) 
-        for code, test_case in zip(codes_base, test_cases)
-    ]
+    if (test_cases != None):    
+        metrics = [
+            measure_script_performance(code, test_case.input_path, test_case.expected_output_path) 
+            for code, test_case in zip(codes, test_cases)
+        ]
+        base_metrics = [
+            measure_script_performance(code, test_case.input_path, test_case.expected_output_path) 
+            for code, test_case in zip(codes_base, test_cases)
+        ]
     
-    rewards = np.zeros_like(code_ids, dtype=np.float)
+    rewards = np.zeros_like(code_ids, dtype=float)
     compile_batch = 0
     execution_time_batch = 0
     memory_usage_batch = 0
     for i in range(len(rewards)):
-        execution_time, memory_usage, did_compile = metrics[i]
-        execution_time_base, memory_time_base, did_compile_base = base_metrics[i]
+        if (test_cases != None):
+            execution_time, memory_usage, did_compile = metrics[i]
+            execution_time_base, memory_time_base, did_compile_base = base_metrics[i]
+        else:
+            execution_time, memory_usage, did_compile = 0.2, 0.1, 1
+            execution_time_base, memory_time_base, did_compile_base = 0.3, 0.2, 1
         reward = 1 if did_compile else -1
 
         compile_batch += reward

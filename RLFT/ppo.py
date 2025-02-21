@@ -87,7 +87,7 @@ class PPOTrainer:
         bs = source_ids.size()[0]
         timing = dict()
         t0 = time.time()
-
+        print(source_ids.shape, source_mask.shape, response_ids.shape)
         t = time.time()
         logprobs, ref_logprobs, values = self.batched_forward_pass(source_ids, source_mask, response_ids)
         timing['time/ppo/forward_pass'] = time.time()-t
@@ -129,13 +129,17 @@ class PPOTrainer:
 
 
     def batched_forward_pass(self, source_ids, source_mask, response_ids):
+        #self.model(input_ids=source_ids, attention_mask=source_mask, labels=response_ids)
         with torch.no_grad():
-            logits, _, _ = self.model(input_ids=source_ids, attention_mask=source_mask, labels=response_ids)
-            ref_logits, _, _ = self.ref_model(input_ids=source_ids, attention_mask=source_mask, labels=response_ids)
+            model_output = self.model(input_ids=source_ids, attention_mask=source_mask, labels=response_ids) #, output_scores = True, return_dict_in_generate = True
+            ref_model_output = self.ref_model(input_ids=source_ids, attention_mask=source_mask, labels=response_ids)#, output_scores = True, return_dict_in_generate = True)
             values = self.value_model(input_ids=source_ids, attention_mask=source_mask, labels=response_ids)
         values = values.detach()
-        logprobs = logprobs_from_logits(logits, response_ids).detach()
-        ref_logprobs = logprobs_from_logits(ref_logits, response_ids).detach()
+        logprobs = logprobs_from_logits(model_output.logits, response_ids).detach()
+        ref_logprobs = logprobs_from_logits(ref_model_output.logits, response_ids).detach()
+        #logits = torch.randn((batch_size, vocab_size))
+        #log_probs = torch.nn.functional.log_softmax(model_output.scores, dim=-1)
+        #ref_logprobs = torch.nn.functional.log_softmax(model_ref_output.scores, dim=-1)
         
         return logprobs, ref_logprobs, values
 
@@ -177,7 +181,9 @@ class PPOTrainer:
         advantages = whiten(advantages)
         advantages = advantages.detach()
 
-        logits, _, vpred = self.model(input_ids=source_ids, attention_mask=source_mask, labels=response_ids)
+        model_output = self.model(input_ids=source_ids, attention_mask=source_mask, labels=response_ids)
+        logits = model_output.logits
+        vpred = self.value_model(input_ids=source_ids, attention_mask=source_mask, labels=response_ids)
         logprob = logprobs_from_logits(logits, response_ids)
         vpredclipped = clip_by_value(vpred,
                                      values - self.ppo_params["cliprange_value"],

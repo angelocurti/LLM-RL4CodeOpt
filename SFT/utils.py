@@ -10,7 +10,7 @@ class ModelArguments:
     Arguments for configuring and loading the model and tokenizer used in training.
     """
     model_name_or_path: str = field(
-        default="Salesforce/codet5p-770m",
+        default="bigcode/starcoder2-3b",
         metadata={"help": "Path or name of the pre-trained model to fine-tune."}
     )
     tokenizer_name_or_path: Optional[str] = field(
@@ -33,7 +33,7 @@ class ModelArguments:
         print(f"Loading tokenizer from: {tokenizer_path}")
 
         tokenizer = AutoTokenizer.from_pretrained(tokenizer_path, cache_dir=self.cache_dir)   #if the architecture changes this line must be changed
-        model = AutoModelForSeq2SeqLM.from_pretrained(model_path, cache_dir=self.cache_dir)   #if the architecture changes this line must be changed
+        model = AutoModelForSeq2SeqLM.from_pretrained(model_path, revision="main")   #if the architecture changes this line must be changed
 
         return model, tokenizer
     
@@ -42,18 +42,18 @@ class TrainingArguments(HFTrainingArguments):
     """
     Training arguments tailored for Salesforce/codet5p-770m or similar encoder-decoder models.
     """
-    cache_dir: Optional[str] = field(
+    '''cache_dir: Optional[str] = field(
         default=None,
         metadata={"help": "Directory for caching pre-trained models and tokenizers."}
-    )
+    )'''
     optim: str = field(
         default="adamw_torch",
         metadata={"help": "Optimizer to use during training. Default is AdamW implemented in PyTorch."}
     )
-    model_max_length: int = field(
-        default=256,
+    '''model_max_length: int = field(
+        default=512,
         metadata={"help": "Maximum sequence length. Sequences longer than this will be truncated."}
-    )
+    )'''
     learning_rate: float = field(
         default=5e-5,
         metadata={"help": "Learning rate for training."}
@@ -67,14 +67,14 @@ class TrainingArguments(HFTrainingArguments):
         metadata={"help": "Weight decay for the AdamW optimizer."}
     )
     per_device_train_batch_size: int = field(
-        default=4,
+        default=16,
         metadata={"help": "Batch size per device for training."}
     )
     per_device_eval_batch_size: int = field(
-        default=2,
+        default=16,
         metadata={"help": "Batch size per device for evaluation."}
     )
-    evaluation_strategy: str = field(
+    eval_strategy: str = field(
         default="steps",
         metadata={"help": "Evaluation strategy to use. Choose from 'no', 'steps', or 'epoch'."}
     )
@@ -86,12 +86,12 @@ class TrainingArguments(HFTrainingArguments):
         default=50,
         metadata={"help": "Number of steps between logging outputs."}
     )
-    predict_with_generate: bool = field(
+    '''predict_with_generate: bool = field(
         default=True,
         metadata={
             "help": "Whether to use `generate()` to compute metrics during evaluation for sequence-to-sequence tasks."
         }
-    )
+    )'''
     fp16: bool = field(
         default=True,
         metadata={"help": "Use 16-bit (mixed) precision instead of 32-bit."}

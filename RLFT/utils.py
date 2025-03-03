@@ -8,8 +8,25 @@ from collections.abc import Mapping
 import numpy as np
 from tqdm import tqdm
 import pickle
+import re
 
 
+def extract_useful_code(generated_text):
+    """
+    Estrae la parte utile del codice generato, fermandosi quando inizia la sezione di test o altre parti non desiderate.
+    """
+    useful_code = []
+    for line in generated_text.splitlines():
+        stripped_line = line.strip()
+        
+        # Se inizia una sezione di test, interrompiamo l'estrazione
+        if stripped_line.startswith("if __name__ == \"__main__\"") or re.match(r"def test_", stripped_line):
+            break
+        
+        # Se la riga non è vuota, la salviamo
+        useful_code.append(line)
+
+    return "\n".join(useful_code)
 
 def flatten_dict(nested, sep='/'):
     """Flatten dictionary and concatenate nested keys with separator."""

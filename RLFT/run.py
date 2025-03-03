@@ -1,166 +1,142 @@
 import os
 import sys
-
-project_root = os.path.abspath(os.path.join(os.path.dirname(__file__), '..'))
-sys.path.append(project_root)
-
-# Importa il DataLoader dal modulo Dataset
 from Dataset.Dataloader import Dataloader
 import torch
 import numpy as np
 import datetime
 from torch.utils.data import Dataset
 from reward_function import get_reward
-from value_model import CodeT5HeadWithValueModel
-from transformers import AutoTokenizer, AutoModelForSeq2SeqLM, AutoConfig, AutoModel
+from utils import extract_useful_code
+from value_model import ValueModel
+from transformers import AutoTokenizer, AutoModelForCausalLM
 from ppo import PPOTrainer
-from itertools import cycle
 from tqdm import tqdm
 import argparse
 from utils import respond_to_batch
 from huggingface_hub import login
 
+project_root = os.path.abspath(os.path.join(os.path.dirname(__file__), '..'))
+sys.path.append(project_root)
+device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+
+login(token='...')
+
+###PARSING ARGUMENTS  
 parser = argparse.ArgumentParser()
-## Required parameters  
-parser.add_argument("--asp", default=2, type=int,
-                    help="action space")  
-parser.add_argument("--data_path", default=None, type=str,
-                    help="data parent directory")  
-parser.add_argument("--output_path", default="RLoutput/", type=str,
-                    help="output directory")
-parser.add_argument("--model_path", default="Salesforce/codet5p-770m", type=str,
-                    help="path to load models")
-parser.add_argument("--baseline_output_path", default=None, type=str,
-                    help="path to load models")
-parser.add_argument("--dataset_path", default="Dataset/Code_pairs_small.csv", type=str,
-                    help="path to load dataset")
-parser.add_argument("--max_source_length", default=256, type=int,
-                    help="maximum source length")
-parser.add_argument("--max_target_length", default=256, type=int,
-                    help="maximum target length")
-parser.add_argument("--train_batch_size", default=1, type=int,
-                    help="train_batch_size")
-parser.add_argument("--test_batch_size", default=4, type=int,
-                    help="test_batch_size")
-parser.add_argument("--train_epochs", default=1, type=int,
-                    help="test_batch_size")
-parser.add_argument("--run", default=1, type=int,
-                    help="run ID")
+parser.add_argument("--output_path", default="RLoutput/LLaMa_3.2/", type=str, help="output directory")
+parser.add_argument("--model_path", default="meta-llama/Llama-3.2-1B", type=str, help="path to load models")
+parser.add_argument("--baseline_output_path", default=None, type=str, help="path to load models")
+parser.add_argument("--dataset_path", default="Dataset/Code_Pairs_small.csv", type=str, help="path to load dataset")
+parser.add_argument("--max_source_length", default=256, type=int, help="maximum source length")
+parser.add_argument("--max_target_length", default=256, type=int, help="maximum target length")
+parser.add_argument("--train_batch_size", default=8, type=int, help="train_batch_size")
+parser.add_argument("--test_batch_size", default=4, type=int, help="test_batch_size")
+parser.add_argument("--train_epochs", default=1, type=int, help="test_batch_size")
+parser.add_argument("--run", default=1, type=int, help="run ID")
 parser.add_argument("--lr", type=float, default=1e-5, help="Learning rate")
 parser.add_argument("--kl_coef", type=float, default=0.05, help="KL Coefficient")
 parser.add_argument("--kl_target", type=float, default=1, help="Adaptive KL Target")
 parser.add_argument("--vf_coef", type=float, default=1e-3, help="Coefficient of the Value Error")
   
-
 args = parser.parse_args()
-args.device =  torch.device("cuda" if torch.cuda.is_available() else "cpu")
-#print(torch.version.cuda)
 
-print("STARTED MODEL LOADING")
-#load models
-#model to be trained
-num_gpus = torch.cuda.device_count()
-print(f"Numero di GPU disponibili: {num_gpus}")
-tokenizer = AutoTokenizer.from_pretrained(args.model_path, truncation=True, padding='max_length', max_length=args.max_source_length)
-model = AutoModelForSeq2SeqLM.from_pretrained(args.model_path)#, trust_remote_code=True, revision = "main")
-model.to(args.device)
-#model.config.decoder_start_token_id = 50256 
-#model.config.pad_token_id = tokenizer.pad_token_id
-#model = FSDP(model, cpu_offload=CPUOffload(offload_params=True))
-print("MODEL LOADING OK")
-print("STARTED REF MODEL LOADING")
-#ref model for KL divergence
-model_ref = AutoModelForSeq2SeqLM.from_pretrained(args.model_path)#, trust_remote_code=True, revision = "main")
-model_ref.to(args.device)
-#model_ref.config.decoder_start_token_id = 50256 
-#model_ref.config.pad_token_id = tokenizer.pad_token_id
-#model = FSDP(model_ref, cpu_offload=CPUOffload(offload_params=True))
-print("REF MODEL LOADING OK")
-#value model
-print("STARTED VALUE MODEL LOADING")
-value_model = CodeT5HeadWithValueModel()
-value_model.to(args.device)
-print("VALUE MODEL LOADING OK")
-print("STARTED PPO CONFIG")
-#ppo trainer initialization
-ppo_config = {"batch_size": args.train_batch_size, 'eos_token_id': tokenizer.eos_token_id, 'lr':args.lr, "adap_kl_ctrl": True, 'init_kl_coef':args.kl_coef,"target":args.kl_target, "vf_coef":args.vf_coef}
-ppo_trainer = PPOTrainer(model, model_ref, value_model, **ppo_config)
-print("PPO CONFIG OK")
-#load data 
+###DATA LOADING
 print("STARTED DATA LOADING")
-#data collator
-def collate_fn(batch):
-    """Converte liste in tensori per PyTorch DataLoader."""
-    return {
-        key: torch.tensor([item[key] for item in batch], dtype=torch.long)
-        for key in batch[0].keys()
-    }
-
 data_loader = Dataloader(args.dataset_path)
 data_loader.load(args.dataset_path)
 #preparing dataset for training
 data_loader.tokenize(tokenizer)
 #splitting the dataset
-data_loader.split_data()
 train_data = data_loader.tokenized_dataset["train"]
-test_data = data_loader.tokenized_dataset["test"]
-
-# Verifica che la tokenizzazione sia stata eseguita correttamente
 print("DATA LOADING OK")
-print(data_loader.tokenized_dataset['train'].column_names)
-#batching the data to achieve better efficiency
-train_data = train_data.remove_columns([col for col in train_data.column_names if col not in ["input_ids", "attention_mask", "labels"]])
-batched_data = torch.utils.data.DataLoader(train_data, batch_size=args.train_batch_size, shuffle=True, collate_fn=collate_fn)
-#print(batched_data[0])  
-#training
+
+###MODEL LOADING
+print("STARTED MODEL LOADING")
+model = AutoModelForCausalLM.from_pretrained(checkpoint).to(device)
+#model.to(args.device)
+tokenizer = AutoTokenizer.from_pretrained(args.model_path, return_tensors = 'pt', truncation=True, padding='max_length', max_length=args.max_source_length, padding_side = "left")
+tokenizer.pad_token = tokenizer.eos_token
+print("MODEL LOADING OK")
+
+###REF MODEL LOADING
+print("STARTED REF MODEL LOADING")
+#ref model for KL divergence
+model_ref = AutoModelForCausalLM.from_pretrained(checkpoint).to(device)
+print("REF MODEL LOADING OK")
+
+###VALUE MODEL LOADING
+print("STARTED VALUE MODEL LOADING")
+#value model
+value_model = ValueModel(model_name=checkpoint).to(device)
+print("VALUE MODEL LOADING OK")
+
+###PPOCONFIG
+print("STARTED PPO CONFIG")
+#ppo trainer initialization
+ppo_config = {"batch_size": args.train_batch_size, 'eos_token_id': tokenizer.eos_token_id, 'lr':args.lr, "adap_kl_ctrl": True, 'init_kl_coef':args.kl_coef,"target":args.kl_target, "vf_coef":args.vf_coef}
+ppo_trainer = PPOTrainer(model, model_ref, value_model, **ppo_config)
+print("PPO CONFIG OK")
+
+#helpers
+n_element = 0
+n_tot = len(train_data)
 nsteps = 0
 total_rewards = 0
 total_seen = 0
-device = args.device
-print(device)
+pad_token = 0
+eos_index = 255
+i = 0
+
 for ep in range(args.train_epochs):
-    pbar = tqdm(batched_data, total=len(batched_data))
-    for batch in pbar:
-        #batch = tuple(t.to(args.device) for t in batch)
+    while i < len(train_data):
+        
+        print("STARTING STEP")
+        #batch of data
+        batch = train_data[i:i+args.train_batch_size]
+        
+        #loading inputs to fed model ###FIX (organizing in batch)
         source_ids,source_mask,target_ids = batch['input_ids'].to(device), batch['attention_mask'].to(device), batch['labels'].to(device)
+        source_mask = source_mask.squeeze(1) #to have consistent dimensions
+        #loading problem_id for test cases
+        problem_ids = [batch[i]['problem_id'] for i in range(args.train_batch_size)]
         
-        #source_ids = source_ids.reshape(source_ids.size(0), -1)
-        #source_ids.to(device)# Rimuove la dimensione 1
-        #source_mask = source_ids.reshape(source_mask.size(0), -1)  # Rimuove la dimensione 1
-        #target_ids = target_ids.reshape(target_ids.size(0), -1)  # Rimuove la dimensione 1 #synced_gpus=True
-        source_ids = source_ids.reshape(source_ids.size(0), -1)
-        source_mask = source_mask.reshape(source_mask.size(0), -1)  # Add this line
-        target_ids = target_ids.reshape(target_ids.size(0), -1)  # Add this line
+        #model generation
+        response_ids = model.generate(input_ids=source_ids, attention_mask=source_mask, max_new_tokens=256, eos_token_id=tokenizer.eos_token_id, pad_token_id=tokenizer.eos_token_id)#, do_sample=True, temperature=0.7, top_p=0.92, top_k=50, repetition_penalty=1.2, no_repeat_ngram_size=3, num_return_sequences=1, length_penalty=1.0, num_beams=1).detach()[:,:]
         
-        # Print shapes for debugging
+        #padding to ensure consistency ###FIX(better handling possible with eos token)
+        pad_length = 2*args.max_source_length - response_ids.shape[1]
+        if pad_length > 0:
+            padding = torch.full((1, pad_length), pad_token, dtype=torch.long).to(device)
+            response_ids = torch.cat([response_ids, padding], dim=1)
         
-        # Proper model call
-        '''outputs = model(
-            input_ids=source_ids,
-            attention_mask=source_mask,
-            labels=target_ids
-        )'''
-        response_ids  = model.generate(source_ids, max_length=args.max_target_length).detach()[:,:]
-        response_codes = tokenizer.batch_decode(response_ids, skip_special_tokens=True, \
+        #taking only the generated code
+        generated_ids = response_ids[:,eos_index:-1] #padding
+        resp = tokenizer.batch_decode(generated_ids, skip_special_tokens=True, \
                                                 clean_up_tokenization_spaces=False)
-        response_ids_ref  = torch.clone(model_ref.generate(source_ids, max_length=args.max_target_length).detach()[:,:])
+
+        #filtering responses to have executable snippet of code
+        resp_filtered = [extract_code(resp[i]) for i in range(args.train_batch_size)]
+
+        #reward calculation
+        reward,mean_rate,mean_execution_time,mean_memory_usage  = get_reward(test_cases = problem_ids[0], code_ids=generated_ids, codes = resp_filtered, tokenizer = tokenizer)
         
-        reward,mean_rate,mean_execution_time,mean_memory_usage  = get_reward(test_cases = None, code_ids=response_ids, base_ids=response_ids_ref, tokenizer=tokenizer)
-        #print(reward.sum(axis=-1).tolist())
-        print(source_mask.shape, response_ids.shape, response_ids_ref.shape)
-        total_rewards += sum(reward.sum(axis=-1).tolist())
+        #rewards stat
+        total_rewards += sum(reward.sum(axis=-1).tolist()) #rewards stat
         total_seen += len(source_ids)
+        
+        ###PPO STEP
         print("STARTING PPO STEP")
-        #PPO Step
-        train_stats = ppo_trainer.step(source_ids, source_mask, response_ids, response_ids_ref, reward.to(args.device))
+        train_stats = ppo_trainer.step(source_ids, source_mask, generated_ids, reward.to(args.device))
         print("PPO STEP OK")
         
+        #step statistics
         mean_kl = train_stats['objective/kl']
         mean_entropy = train_stats['objective/entropy']
         loss, pg_loss, vf_loss = train_stats['ppo/loss/total'], train_stats['ppo/loss/policy'], train_stats['ppo/loss/value']
         mean_advg, mean_return,mean_val = train_stats['ppo/policy/advantages_mean'], train_stats['ppo/returns/mean'], train_stats['ppo/val/mean']
 
         nsteps += 1
+        i = min(i + args.train_batch_size, n_tot)
 
         #save the results
         with open(args.output_path+'results.csv', 'a') as f:
@@ -185,8 +161,10 @@ for ep in range(args.train_epochs):
                     ',' + str(mean_execution_time) +
                     ',' + str(mean_memory_usage)
                     + '\n')
+        
+        print("STEP OK")
 
-
+#load final model
 path = args.output_path
 path = os.path.join(path, 'checkpoints')
 if not os.path.exists(path):

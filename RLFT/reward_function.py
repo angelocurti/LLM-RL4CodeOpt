@@ -4,61 +4,68 @@ import torch
 import sys
 import time
 import subprocess
-    
-def remove_special_tokens(code_string):
-    lines = code_string.split("NEW_LINE")
-    lines = [item.strip() for item in lines]
-    
-    curr_indent = 0
-    new_lines = []
-    for line in lines:
-        indent_count = line.count('INDENT')
-        dedent_count = line.count('DEDENT')
-        curr_indent += indent_count - dedent_count
-        wo_indent = re.sub('INDENT\s?', '', line)
-        wo_dedent = re.sub('DEDENT\s?', '', wo_indent)
-        new_lines.append('\t'*curr_indent + wo_dedent)
-    return ("\n").join(new_lines)
-
-def execute_code(code, lang):
-    import time
+import time
 import subprocess
 import psutil
+import os  
 
-def measure_script_performance(script_code, input_path, expected_output_path, timeout_seconds=15, verbose=False):
+def measure_script_performance(code, test_path, timeout_seconds=5, verbose=False):
     
     # test case loading
-    #input
-    with open(input_path, "r") as input_f:
+    inputs = os.path.join(test_path, "input.0.txt")
+    expected_outputs = os.path.join(test_path, "output.0.txt")
+    if not os.path.exists(inputs) or not os.path.exists(expected_outputs):
+        print(f"Error: invalid path\n")
+        return 0, 0, False
+    
+    #reading input and output test cases
+    with open(inputs, "r") as input_f:
         input_cases = input_f.readlines()
+
+    with open(expected_outputs, "r") as expected_f:
+        expected_output = expected_f.readlines()
     
-    #expected output
-    with open(expected_output_path, "r") as expected_f:
-        expected_outputs = expected_f.readlines()
+    # common imports to avoid that programs fails too much 
+    common_imports = """
+import os
+import sys
+import math
+import re
+import time
+import random
+import datetime
+import json
+import csv
+import numpy as np
+import pandas as pd
+from collections import defaultdict, Counter, deque
+from itertools import permutations, combinations, product
+"""
     
-    # Check if the number of test cases matches the number of expected outputs
-    if len(input_cases) != len(expected_outputs):
-        print("Errore: il numero di casi di test non corrisponde al numero di output attesi.")
-        return None
+    #script with needed imports
+    program = common_imports + "\n" + code
     
-    script_file = "temp_script.py"  # Percorso al file temporaneo
+    #saving it to a temporary file
+    script_file = "temp_script.py"  
     with open(script_file, "w", encoding='utf-8') as f:
-        f.write(script_code)
+        f.write(program)
     
-    max_duration = 0  # Tempo massimo di esecuzione
-    max_memory_usage = 0  # Consumo massimo di memoria
+    #initializing future results
+    max_duration = 0  
+    max_memory_usage = 0 
     all_correct = True
 
-    for i, (input_case, expected_output) in enumerate(zip(input_cases, expected_outputs)):
-        # Remove leading/trailing whitespaces
+    for i, (input_case, expected_output) in enumerate(zip(input_cases, expected_output)):
+        
+        #remove leading/trailing whitespaces
         input_case = input_case.strip()
         expected_output = expected_output.strip()
 
-        # write input to a temporary file
+        #write input to a temporary file
         with open("temp_input.txt", "w") as temp_input_file:
             temp_input_file.write(input_case)
 
-        # Esegui il caso di test
+        ###CODE EXECUTION
         start = time.perf_counter()
         
         with open("temp_input.txt", "r") as temp_input_f:
@@ -93,7 +100,7 @@ def measure_script_performance(script_code, input_path, expected_output_path, ti
                     stdout, stderr = b"", b"Timeout Expired"
                 else:
                     try:
-                        # Comunica con il processo per catturare stdout e stderr
+                        #debugging
                         stdout, stderr = proc.communicate(timeout=timeout_seconds)
                     except subprocess.TimeoutExpired:
                         proc.kill()
@@ -101,7 +108,7 @@ def measure_script_performance(script_code, input_path, expected_output_path, ti
 
         end = time.perf_counter()
 
-        # Calcolo delle metriche
+        ###METRICS
         duration = end - start - 0.1
         script_output = stdout.decode("utf-8").strip()
 
@@ -109,13 +116,13 @@ def measure_script_performance(script_code, input_path, expected_output_path, ti
         max_duration = max(max_duration, duration)
         max_memory_usage = max(max_memory_usage, max_memory)
         #checking functional correctness
-        is_correct = script_output == expected_output
+        all_correct = script_output == expected_output
+
         if verbose:
             if stderr:
                 print("Captured stderr (errors):")
             
             if not is_correct:
-                all_correct = False
                 print(f"Test case {i + 1} FAILED!")
                 print(f"  Input: {input_case}")
                 print(f"  Expected: {expected_output}")
@@ -128,55 +135,66 @@ def measure_script_performance(script_code, input_path, expected_output_path, ti
             print(f"Consumo massimo di memoria: {max_memory_usage / 1024**2:.4f} MB")
             print(f"Accuracy complessiva: {'Correct' if all_correct else 'Incorrect'}")
     
+    # Cleanup temp files
+    try:
+        os.remove(script_file)
+        os.remove("temp_input.txt")
+    except:
+        pass
+        
     return max_duration, max_memory_usage, all_correct
 
 
-
-def get_reward(test_cases = None, code_ids=None, base_ids=None, tokenizer=None):
-    code_ids = np.array(code_ids.cpu())
-    eos_positions = []
+def get_reward(test_cases, code_ids, base_codes, codes, tokenizer = None):
+    
+    """This function calculates the reward derived from execution of a batch of snippet of code. 
+    Reward is calculated considering functional correctness, execution time and memory usage improvement."""
+    
+    #initiliazation
+    code_ids = np.array(code_ids.cpu()) #to be compliant with kl reward
     max_len = code_ids.shape[1]
+    metrics = []
+    metrics_base = []
+    rewards = np.zeros_like(code_ids, dtype=float)
+    compile_batch = 0
+    execution_time_batch = 0
+    memory_usage_batch = 0
+    
+    #padding
     for id in code_ids:
         if tokenizer.eos_token_id in id:
             eos_positions.append((id==tokenizer.eos_token_id).argmax())
         else:
             eos_positions.append(max_len)
-
-    codes = [tokenizer.decode(id[:eos_pos], skip_special_tokens=True, clean_up_tokenization_spaces=False) \
-             for id,eos_pos in zip(code_ids, eos_positions)]
-    codes_base = [tokenizer.decode(id[:eos_pos], skip_special_tokens=True, clean_up_tokenization_spaces=False) \
-             for id,eos_pos in zip(base_ids, eos_positions)] 
-    if (test_cases != None):    
-        metrics = [
-            measure_script_performance(code, test_case.input_path, test_case.expected_output_path) 
-            for code, test_case in zip(codes, test_cases)
-        ]
-        base_metrics = [
-            measure_script_performance(code, test_case.input_path, test_case.expected_output_path) 
-            for code, test_case in zip(codes_base, test_cases)
-        ]
     
-    rewards = np.zeros_like(code_ids, dtype=float)
-    compile_batch = 0
-    execution_time_batch = 0
-    memory_usage_batch = 0
-    for i in range(len(rewards)):
-        if (test_cases != None):
-            execution_time, memory_usage, did_compile = metrics[i]
-            execution_time_base, memory_time_base, did_compile_base = base_metrics[i]
+    #execute base code and improved versions
+    for i in range(len(test_cases)):
+        if (codes[i]):
+            metrics.append(measure_script_performance(codes[i], f"test_cases/public_test_cases/{test_cases[i]}"))
         else:
-            execution_time, memory_usage, did_compile = 0.2, 0.1, 1
-            execution_time_base, memory_time_base, did_compile_base = 0.3, 0.2, 1
-        reward = 1 if did_compile else -1
+            metrics.append(0,0, False)
+        if(base_codes[i]):
+            metrics_base(measure_script_performance(base_codes[i], f"test_cases/public_test_cases/{test_cases[i]}"))
+        else:
+            metrics_base.append(0,0, False)
 
-        compile_batch += reward
+    #calculating reward tensor
+    for i in range(len(rewards)):
+        
+        execution_time, memory_usage, did_compile = metrics[i][0], metrics[i][1], metrics[i][2]
+        execution_time_base, memory_usage_base = base_perf[i][0], base_perf[i][1]
         execution_time_batch += execution_time
         memory_usage_batch += memory_usage
-        rewards[i, min(eos_positions[i],max_len-1)] = reward + (execution_time_base- execution_time) + (memory_time_base-memory_usage)
-        #aggiungere penalità tipo ast per mismatch con la soluzione esatta
-     
-    mean_rate = compile_batch/len(codes)
-    mean_execution_time = execution_time_batch/len(codes)
-    mean_memory_usage = memory_usage_batch/len(codes)
+        #checking if time and memory usage have been improved
+        reward = 1 if (execution_time < execution_time_base and memory_usage < memory_usage_base) else (0.5 if (execution_time < execution_time_base) else -0.5)
+        reward = reward if did_compile else -1
+        compile_batch += reward
+        #rewards tensor
+        rewards[i, min(eos_positions[i],max_len-1)] = reward
+    
+    #statistics
+    mean_rate = compile_batch/len(codes) if (codes) else 0
+    mean_execution_time = execution_time_batch/len(codes) if (codes) else 0
+    mean_memory_usage = memory_usage_batch/len(codes) if (codes) else 0
     
     return torch.Tensor(rewards),mean_rate,mean_execution_time,mean_memory_usage
